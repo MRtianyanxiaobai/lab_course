@@ -1,0 +1,1508 @@
+{
+ "cells": [
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "## TensorFlow 2  实现 AI 换脸"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 介绍"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "人脸互换是计算机视觉领域比较热门的一个应用，它可以应用于视频合成，提供隐私服务，肖像更换等各个领域。本实验将从自编码器，上采样，数据增强等知识点出发，对深度学习下的人脸互换进行讲解。并且利用 TensorFlow 2 实现川普和道格拉斯·凯奇的人脸互换。完成后的模型可以在不修改原图表情的情况下，完成人脸替换。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 知识点"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- 数据的可视化\n",
+    "- 数据增强\n",
+    "- 自编码器\n",
+    "- 上采样与下采样\n",
+    "- 子像素卷积"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "---"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 传统人脸互换"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "在深度学习出来之前，人脸互换主要是通过对比两张脸的相似信息来进行互换。我们可以通过特征点（下图的红色点）来提取一张脸的眉毛、眼睛等特征信息，然后匹配到另外一张人脸上。如下图所示，这种实现方法不需要训练时间，每次只需要遍历所有的像素点即可。但是，这样实现的效果比较差，无法修改人脸的表情。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width='700px' src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732561661\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "而深度学习却可以在不修改人脸表情的情况下，做到人脸特征替换的效果。由于视频中的人脸互换所需要的资源过多，并且视频就是由一张张图片组成的，因此本次实验只考虑图片中的人脸替换。我们会借用自编码器的核心思想，然后对 DeepFake 的源码进行解析，最后实现川普和尼古拉斯 · 凯奇的人脸互换。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 数据的可视化"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "由于本次实验会使用到 OpenCV 以及 TensorFlow 2 等工具包，所以在实验之前，我们先对线上环境进行安装与升级。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "先来解决线上环境的一些依赖问题，本地无需这些操作。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "!pip install --upgrade pip msgpack setuptools h5py\n",
+    "!pip uninstall tensorflow -y\n",
+    "!pip install -U --ignore-installed wrapt "
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "开始安装所需要的工具包。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "# 解决线上环境的一些依赖问题，本地无需这些操作\n",
+    "!pip install tensorflow  # 安装 TensorFlow 2\n",
+    "!pip install --upgrade keras\n",
+    "!pip install opencv-python"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来，下载实验所需要的数据集，并且完成解压。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "!wget -nc \"https://labfile.oss.aliyuncs.com/courses/1460/data.zip\" # 下载数据集\n",
+    "!unzip -o \"data.zip\" # 解压"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "数据集主要由两个文件夹构成，一个文件名为 trump ，一个为 cage 。接下来，我们利用 Python 遍历这两个文件夹，并获得所有文件的路径。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<i class=\"fa fa-arrow-circle-down\" aria-hidden=\"true\"> 教学代码：</i>"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {
+    "scrolled": true
+   },
+   "outputs": [],
+   "source": [
+    "import os\n",
+    "\n",
+    "\n",
+    "# 遍历directory下的所有文件，并且把他们的路径用一个列表进行返回\n",
+    "def get_image_paths(directory):\n",
+    "    return [x.path for x in os.scandir(directory) if x.name.endswith(\".jpg\") or x.name.endswith(\".png\")]\n",
+    "\n",
+    "\n",
+    "images_A = get_image_paths(\"trump\")\n",
+    "images_B = get_image_paths(\"cage\")\n",
+    "print(\"川普图片个数为 {}\\n凯奇的图片个数为 {}\".format(len(images_A), len(images_B)))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<i class=\"fa fa-arrow-circle-down\" aria-hidden=\"true\"> 动手练习</i>｜如果你对课程所使用的实验楼 Notebook 在线环境并不熟悉，可以先学习 [<i class=\"fa fa-external-link-square\" aria-hidden=\"true\"> 使用指南课程</i>](https://www.shiyanlou.com/courses/1322)。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来，我们利用 Python 中的 OpenCV 库，对图片进行批量加载。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import cv2\n",
+    "import numpy as np\n",
+    "\n",
+    "\n",
+    "# 批量加载图片，传入的是路径集合，遍历所有的路径，并加载图片\n",
+    "def load_images(image_paths):\n",
+    "    iter_all_images = (cv2.imread(fn) for fn in image_paths)\n",
+    "\n",
+    "    # iter_all_images 是一个 generator 类型，将它转换成熟知的 numpy 的列表类型并返回\n",
+    "    for i, image in enumerate(iter_all_images):\n",
+    "        if i == 0:\n",
+    "            # 对all_images 进行初始,并且指定格式\n",
+    "            all_images = np.empty(\n",
+    "                (len(image_paths),) + image.shape, dtype=image.dtype)\n",
+    "        all_images[i] = image\n",
+    "\n",
+    "    return all_images\n",
+    "\n",
+    "\n",
+    "# 每个文件夹加载三张图片\n",
+    "A_images = load_images(images_A[0:3])\n",
+    "B_images = load_images(images_B[0:3])\n",
+    "print(A_images.shape)\n",
+    "print(B_images.shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "这里我们分别加载了两个人物的前三张图片。从上面的运行结果可以看出，每张图片大小为 $256 \\times 256$ 。那么怎样才能一次性，将这些图片同时展示出来呢？核心思想便是将这 6 张图片拼在一起，形成一个 $512 \\times 768$ 的图片（一行三张，一共两行）。整体的思路如下图所示："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width='1000px' src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732530991\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "首先让我们来实现 `stack_images` 函数。为了方便以后使用，我们将 `stack_images` 写成一个可以将图片集合转变成一张图片的函数。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 根据所给的维度长度，告诉调用者哪些维度应该被放入第 0 维度，哪些应该被转换为第 1 维度\n",
+    "# 例如 （2,3,256,256,3） 则是第 0 维，第 2 维合在一起，转换成新的图片的第0维（也就是行的个数）\n",
+    "# 第 1 维，第 3 维合在一起，转换成新的图片的第1维（也就是列的个数）\n",
+    "def get_transpose_axes(n):\n",
+    "    # 根据总长度的奇偶性，来制定不同的情况\n",
+    "    if n % 2 == 0:\n",
+    "        y_axes = list(range(1, n-1, 2))\n",
+    "        x_axes = list(range(0, n-1, 2))\n",
+    "    else:\n",
+    "        y_axes = list(range(0, n-1, 2))\n",
+    "        x_axes = list(range(1, n-1, 2))\n",
+    "    return y_axes, x_axes, [n-1]\n",
+    "\n",
+    "\n",
+    "# 可以将存储多张图片的多维集合，拼成一张图片\n",
+    "def stack_images(images):\n",
+    "    images_shape = np.array(images.shape)\n",
+    "    # new_axes 得到的是三个列表。[0,2],[1,3],[4] 告诉调用者新集合中的每个维度由旧集合中的哪些维度构成\n",
+    "    new_axes = get_transpose_axes(len(images_shape))\n",
+    "    new_shape = [np.prod(images_shape[x]) for x in new_axes]\n",
+    "    return np.transpose(\n",
+    "        images,\n",
+    "        axes=np.concatenate(new_axes)\n",
+    "    ).reshape(new_shape)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "终于，我们可以将 A_images ，B_images 两个图片集合进行展示了。由于 OpenCV 无法在 Notebook 上进行图片的展示。因此我们只能利用 OpenCV 读取图片，再利用 Matplotlib 进行展示。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import matplotlib.pyplot as plt  # plt 用于显示图片\n",
+    "figure = np.concatenate([A_images, B_images], axis=0)  # 6,256,256,3\n",
+    "figure = figure.reshape((2, 3) + figure.shape[1:])  # 2,3,256,256,3\n",
+    "figure = stack_images(figure)  # 512,768,3\n",
+    "%matplotlib inline\n",
+    "# 这里需要指定利用 cv 的调色板，否则 plt 展示出来会有色差\n",
+    "plt.imshow(cv2.cvtColor(figure, cv2.COLOR_BGR2RGB))\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 自编码器"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "在讲解人脸互换所需要的神经网络之前，让我们先来了解一下人脸互换的核心思想：自编码器。这里需要一些 CNN 的相关知识，不了解卷积神经网络的同学，可查看 [实验楼相关课程](https://www.shiyanlou.com/search/?type=course&search=%E5%8D%B7%E7%A7%AF&page_size=15)。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 编码器与解码器"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "自编码器是一种用于非监督学习过程的人工神经网络。自动编码器通常由两部分构成：编码器和解码器。下面，我们通过图示来对其进行解释。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width='600px' src=\"https://doc.shiyanlou.com/document-uid214893labid7506timestamp1551079485470.png\">\n",
+    "\n",
+    "<div style=\"color: #888; font-size: 10px; text-align: right;\"><a href=\"https://towardsdatascience.com/applied-deep-learning-part-3-autoencoders-1c083af4d798\"><i class=\"fa fa-copyright\" aria-hidden=\"true\"> 来源</i></a></div>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- Encoder ：编码器，由各种下采样的方法构成。将输入图片压缩成空间特征 （上图的 Code ），也就是对原图片进行特征提取。\n",
+    "- Decoder ：解码器，由各种上采样的方法构成。重构编码器输出的空间特征，并对其进行解码，输出新的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "自编码器的全过程：编码器对输入的图片进行特征提取，然后解码器对提取的特征进行解析，最后输出新的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "从上图可以看出，手写的数字 4 通过自编码器后，会生成一张看起来像手写字符 4 的新图片。\n",
+    "那么这样做有什么意义呢？其实，在对图片进行去噪的时候，我们经常会采用这种技术。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width='800px' src=\"https://doc.shiyanlou.com/document-uid214893labid7506timestamp1551150655563.png\">\n",
+    "\n",
+    "<div style=\"color: #888; font-size: 10px; text-align: right;\"><a href=\"https://towardsdatascience.com/applied-deep-learning-part-3-autoencoders-1c083af4d798\"><i class=\"fa fa-copyright\" aria-hidden=\"true\"> 来源</i></a></div>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "如上图所示，我们可以将加噪点后的手写字符放入自编码器中，然后以加噪点前的手写字符为目标进行训练。最终就能得到一个专门处理噪点的神经网络模型。当以后出现新的具有噪点的图片时，只需放入训练好的自编码器就可以直接进行去噪了。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "根据上面的知识，我们可以发现自编码器最重要的就是编码器结构和解码器结构。实现编码器的下采样的方法有很多，比如我们熟知的池化、卷积等。但是实现解码器的上采样方法又有哪些呢？怎样才能将缩小的图像放大成原图呢？这里我们将会学习到一种叫做子像素卷积的上采样方法。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 子像素卷积（ Sub-pixel Convolution ）"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "子像素卷积是一种巧妙的图像及特征图的 upscale 方法，又叫做 Pixel Shuffle（像素洗牌）。这种方法于 2016 年被[ Wenzhe Shi\n",
+    "等人](https://arxiv.org/pdf/1609.05158.pdf) 提出。较之前的上采样算法，子像素卷积在速度和质量上都有明显的提升。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "子像素卷积的结构（主要观察后面的彩色部分）如下所示："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732537221\">\n",
+    "\n",
+    "<div style=\"color: #888; font-size: 10px; text-align: right;\"><a href=\"https://arxiv.org/pdf/1609.05158.pdf\"><i class=\"fa fa-copyright\" aria-hidden=\"true\"> 来源</i></a></div>"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "- 第一个彩色部分是通道数为 $r^2$ ，大小为 $n\\times n$ 的特性图，即为 Sub-pixel Convolution 前的图像。\n",
+    "- 第二个彩色部分是通道数为 1 ，大小为 $nr \\times nr$ 的特征图，即为 Sub-pixel Convolution 后的图像。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " 上图很直观得表达了子像素卷积的做法，前面就是一个普通的 CNN 网络，到后面彩色部分就是子像素卷积的操作了。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "简单的说，就是将每一个像素点的所有通道合并在了一起。例如通道数为 9，那么我就可以把第一个像素点的所有通道拿出来，排成一个 $3\\times3$ 的“像素点”，如下图所示："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"600px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732521231\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "对每个像素点都进行上述操作，最后得到了大小为 $nr \\times nr$ 的特征图，进而提高了原图的分辨率。这种提高分辨率的过程就叫做子像素卷积。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "因为 [相关作者]( https://gist.github.com/t-ae/6e1016cc188104d123676ccef3264981) 已经为我们写好了 Keras 版的子像素卷积函数，所以我们只需要复制过来（无需手敲），直接运行即可。以后遇到这种上采样的需求，也可直接将函数复制到本地，用以调用。子像素卷积的代码如下："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 子像素卷积层，用于上采样\n",
+    "# PixelShuffler layer for Keras\n",
+    "from keras.utils import conv_utils\n",
+    "from keras.engine.topology import Layer\n",
+    "import keras.backend as K\n",
+    "\n",
+    "\n",
+    "class PixelShuffler(Layer):\n",
+    "    # 初始化 子像素卷积层，并在输入数据时，对数据进行标准化处理。\n",
+    "    def __init__(self, size=(2, 2), data_format=None, **kwargs):\n",
+    "        super(PixelShuffler, self).__init__(**kwargs)\n",
+    "        self.data_format = K.normalize_data_format(data_format)\n",
+    "        self.size = conv_utils.normalize_tuple(size, 2, 'size')\n",
+    "\n",
+    "    def call(self, inputs):\n",
+    "        # 根据得到输入层图层 batch_size，h ，w，c 的大小\n",
+    "        input_shape = K.int_shape(inputs)\n",
+    "        batch_size, h, w, c = input_shape\n",
+    "        if batch_size is None:\n",
+    "            batch_size = -1\n",
+    "        rh, rw = self.size\n",
+    "\n",
+    "        # 计算转换后的图层大小与通道数\n",
+    "        oh, ow = h * rh, w * rw\n",
+    "        oc = c // (rh * rw)\n",
+    "\n",
+    "        # 先将图层分开，并且将每一层装换到自己应该到维度\n",
+    "        # 最后再利用一次 reshape 函数（计算机会从外到里的一个个的将数据排下来），这就可以转成指定大小的图层了\n",
+    "        out = K.reshape(inputs, (batch_size, h, w, rh, rw, oc))\n",
+    "        out = K.permute_dimensions(out, (0, 1, 3, 2, 4, 5))\n",
+    "        out = K.reshape(out, (batch_size, oh, ow, oc))\n",
+    "        return out\n",
+    "\n",
+    "    # compute_output_shape()函数用来输出这一层输出尺寸的大小\n",
+    "    # 尺寸是根据input_shape以及我们定义的output_shape计算的。\n",
+    "    def compute_output_shape(self, input_shape):\n",
+    "        height = input_shape[1] * self.size[0] if input_shape[1] is not None else None\n",
+    "        width = input_shape[2] * self.size[1]  if input_shape[2] is not None else None\n",
+    "        channels = input_shape[3] // self.size[0] // self.size[1]\n",
+    "\n",
+    "        return (input_shape[0],\n",
+    "                height,\n",
+    "                width,\n",
+    "                channels)\n",
+    "\n",
+    "    # 设置配置文件\n",
+    "    def get_config(self):\n",
+    "        config = {'size': self.size,\n",
+    "                  'data_format': self.data_format}\n",
+    "        base_config = super(PixelShuffler, self).get_config()\n",
+    "\n",
+    "        return dict(list(base_config.items()) + list(config.items()))"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 下采样层与上采样层的编写"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "下采样和上采样就是构成编码器和解码器的具体部件。下采样层主要用于缩小图层大小，扩大图层通道数（即编码器）。上采样主要用于扩大图层大小，缩小图层通道数（即解码器）。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "在本次实验中，每个下采样层包括了一个卷积层和一个 LeakyReLU 激活函数层。而上采样包含了一个卷积层，一个 LeakyReLU 激活函数层和一个像素洗牌层。下采样中的卷积层用于缩小图层大小提取图层特征，上采样中的卷积层用于扩大图层通道数，保证在像素洗牌后的图层的通道数和所需通道数相同。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "假设在上采样时，我们输入的图层大小为 $32\\times32$ ，而我们需要输出的图层大小为 $64\\times64$，通道数为 $256$ 。那么我们就需要在子像素卷积之前先进行一次卷积，使得图层的通道数变为 $256\\times4$ （即得到 $32\\times32 \\times 1024$ 的图层）。然后再通过子像素卷积，就能够输出 $64\\times64\\times256$ 的新图层了。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来我们利用子像素卷积函数以及 Keras 提供的卷积函数对自编码器中的上采样层和下采样层进行编写。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from keras.layers.advanced_activations import LeakyReLU\n",
+    "from keras.layers.convolutional import Conv2D\n",
+    "\n",
+    "\n",
+    "# 下采样层,filters 为输出图层的通道数\n",
+    "# n * n * c -> 0.5n * 0.5n * filters\n",
+    "def conv(filters):\n",
+    "    def block(x):\n",
+    "        # 每一层由一个使图层大小减小一半的卷积层和一个 LeakyReLU 激活函数层构成。\n",
+    "        x = Conv2D(filters, kernel_size=5, strides=2, padding='same')(x)\n",
+    "        x = LeakyReLU(0.1)(x)\n",
+    "        return x\n",
+    "    return block\n",
+    "\n",
+    "\n",
+    "# 上采样层，扩大图层大小\n",
+    "# 图层的形状变化如下：\n",
+    "# n*n*c -> n * n * 4filters -> 2n * 2n * filters\n",
+    "def upscale(filters):\n",
+    "    # 每一层由一个扩大通道层的卷积，一个激活函数和一个像素洗牌层\n",
+    "    def block(x):\n",
+    "        # 将通道数扩大为原来的四倍。为了下一步能够通过像素洗牌 使原来的图层扩大两倍\n",
+    "        x = Conv2D(filters*4, kernel_size=3, padding='same')(x)\n",
+    "        x = LeakyReLU(0.1)(x)\n",
+    "        x = PixelShuffler()(x)\n",
+    "        return x\n",
+    "    return block"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来，我们传入一张图片对上面自定义的两个网络层进行测试："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "import tensorflow as tf\n",
+    "# 将原图片转为 Tensor 类型\n",
+    "x1 = tf.convert_to_tensor(A_images, dtype=tf.float32)\n",
+    "x2 = conv(126)(x1)\n",
+    "x3 = upscale(3)(x2)\n",
+    "print(\"将大小为 {} 的图片传入 filters 为 126 的下采样层中得到大小为 {} 的图层。\".format(x1.shape, x2.shape))\n",
+    "print(\"将大小为 {} 的图层传入 filters 为  3  的上采样层中得到大小为 {} 的图片。\".format(x2.shape, x3.shape))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "从结果可以看出，上采样层可以将图层的大小减小为原来的 $ \\frac{1}{2} $ ，下采样层可以将图层大小扩大为原来的 $2$ 倍。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    " ### 人脸互换的基本架构"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "其实人脸互换的基本结构就是两个自编码器，更准确的说应该是 1 个编码器 + 2 个解码器。接下来，我会从训练过程和运用过程分别对 AI 换脸的概念进行阐述。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 训练过程"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"600px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732452160\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "如上图，我们利用同一套方法（编码器）对两种图片进行特征提取。将提取出来的特征放到各自对应的解码器中，生成各自所对应的图像。然后利用生成的图像与原来的图像计算损失，再反向传播并对模型参数进行调整，如此循环，直到损失最小。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "当损失最小时，我们把川普的图片放入训练好的（Encoder，Decoder_A） 中就能够得到一张和川普神似的图片。同理，若把凯奇的图片放入训练好的（Encode，Decode_B）中，也能得到和凯奇神似的图片。也就是说，在模型训练过程中，原始图片既是训练集合也是目标集合。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 运用过程"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "现在让我们理一下思路，A，B 两类图片通过同一种方法进行特征提取，然后把得到的特征放入各自的解码器中得到了属于自己的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "也就是说 Decoder_A 和 Decoder_B 都能够识别 Encoder 所提取的特征。因此，从同一个 Encoder 中出来的特征既可以放入 Decoder_A 中，也可以放到 Deconder_B中，这就是人脸互换的关键，也是 Encoder 只有一个的原因。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "因此，在上图的模型训练好后，我们只需进行下图的操作即可实现人脸互换："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"500px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732485720\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "如上图所示，将一张川普的图片放入训练好的 EnCoder 中，得到一组特征。将这组特征放入 Decoder_A 中，就能得到一张神似川普的新图片。若将这组特征放入 Decoder_B 中，就会输出与川普表情一样但是和凯奇神似的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 神经网络结构"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "说完人脸互换的原理后，让我们来谈谈本次实验中用到的 Encoder 和 Decoder 的具体网络结构，如下图所示："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"600px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732503856\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "中间那层为编码器的神经网络结构。它由 4 个下采样的卷积层，2 个全连接层，1 个上采样层构成。其中下采样卷积层用于对图片特征进行提取。全连接层用于打乱特征的空间结构，使模型能够学习到更加有用的东西。上采样层用于增加图层大小。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "上下两层为两个解码器。他们的网络结构相同，但是参数不同。他们都是由三个上采样层和一个下采样卷积层构成。其中上采样层的作用是为了扩大图层大小，使最后能够输出和原图片一样大小的新图片。最后的卷积层是为了缩小图层通道数，使最后输出的是一个三通道的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来利用 Keras 对 Encoder 和 Decoder 进行编写："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from keras.models import Model\n",
+    "from keras.layers import Input, Dense, Flatten, Reshape\n",
+    "\n",
+    "# 定义原图片的大小\n",
+    "IMAGE_SHAPE = (64, 64, 3)\n",
+    "# 定义全连接的神经元个数\n",
+    "ENCODER_DIM = 1024\n",
+    "\n",
+    "\n",
+    "def Encoder():\n",
+    "    input_ = Input(shape=IMAGE_SHAPE)\n",
+    "    x = input_\n",
+    "    x = conv(128)(x)\n",
+    "    x = conv(256)(x)\n",
+    "    x = conv(512)(x)\n",
+    "    x = conv(1024)(x)\n",
+    "    x = Dense(ENCODER_DIM)(Flatten()(x))\n",
+    "    x = Dense(4*4*1024)(x)\n",
+    "    x = Reshape((4, 4, 1024))(x)\n",
+    "    x = upscale(512)(x)\n",
+    "    return Model(input_, x)\n",
+    "\n",
+    "\n",
+    "def Decoder():\n",
+    "    input_ = Input(shape=(8, 8, 512))\n",
+    "    x = input_\n",
+    "    x = upscale(256)(x)\n",
+    "    x = upscale(128)(x)\n",
+    "    x = upscale(64)(x)\n",
+    "    x = Conv2D(3, kernel_size=5, padding='same', activation='sigmoid')(x)\n",
+    "    return Model(input_, x)"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "根据人脸互换所需要的自编码器结构，创建 （Encoder，Decoder_A）和（Encoder，Decoder_B）结构，并且选择绝对平方损失作为模型的损失函数。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "from tensorflow.keras.optimizers import Adam\n",
+    "# 定义优化器\n",
+    "optimizer = Adam(lr=5e-5, beta_1=0.5, beta_2=0.999)\n",
+    "encoder = Encoder()\n",
+    "decoder_A = Decoder()\n",
+    "decoder_B = Decoder()\n",
+    "# 定义输入函数大小\n",
+    "x = Input(shape=IMAGE_SHAPE)\n",
+    "# 定义解析 A 类图片的神经网络\n",
+    "autoencoder_A = Model(x, decoder_A(encoder(x)))\n",
+    "# 定义解析 B 类图片的神经网络\n",
+    "autoencoder_B = Model(x, decoder_B(encoder(x)))\n",
+    "# 使用同一个优化器，计算损失和的最小值。损失函数采用平均绝对误差\n",
+    "autoencoder_A.compile(optimizer=optimizer, loss='mean_absolute_error')\n",
+    "autoencoder_B.compile(optimizer=optimizer, loss='mean_absolute_error')\n",
+    "# 输出两个对象\n",
+    "autoencoder_A, autoencoder_B"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 数据预处理"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "为了能够训练出较好的模型，在模型训练之前，我们必须先对数据进行相关处理。接下来，我们将对数据集做如下处理："
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"600\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732510151\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 数据增强"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "数据增强是深度学习中很重要的一步。这种方法可以在不消耗任何成本的情况下，获得更多的数据，进而训练出更好的模型。通过旋转、平移、缩放、剪切等操作，将原来的一张图片拓展成多张图片是数据增强的一种方法。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "我们通过对旋转角度，平移距离，缩放比例等随机取值，来对原始图片进行随机转换。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 该函数中所有的参数的值都可以根据情况自行调整。\n",
+    "def random_transform(image):\n",
+    "    h, w = image.shape[0:2]\n",
+    "    # 随机初始化旋转角度，范围 -10 ~ 10 之间。\n",
+    "    rotation = np.random.uniform(-10, 10)\n",
+    "    # 随机初始化缩放比例，范围 0.95 ~ 1.05 之间。\n",
+    "    scale = np.random.uniform(0.95, 1.05)\n",
+    "    # 随机定义平移距离，平移距离的范围为 -0.05 ~ 0.05。\n",
+    "    tx = np.random.uniform(-0.05, 0.05) * w\n",
+    "    ty = np.random.uniform(-0.05, 0.05) * h\n",
+    "    # 定义放射变化矩阵，用于将之前那些变化参数整合起来。\n",
+    "    mat = cv2.getRotationMatrix2D((w//2, h//2), rotation, scale)\n",
+    "    mat[:, 2] += (tx, ty)\n",
+    "    # 进行放射变化，根据变化矩阵中的变化参数，将图片一步步的进行变化，并返回变化后的图片。\n",
+    "    result = cv2.warpAffine(\n",
+    "        image, mat, (w, h), borderMode=cv2.BORDER_REPLICATE)\n",
+    "    # 图片有 40% 的可能性被翻转\n",
+    "    if np.random.random() < 0.4:\n",
+    "        result = result[:, ::-1]\n",
+    "    return result"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "让我们传入一张图片，进行测试，并观察图片的变化情况："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "old_image = A_images[1]  # 去之前用于展示的第1张图片\n",
+    "transform_image = random_transform(old_image)\n",
+    "print(\"变化前图片大小为{}\\n变化后图片大小为{}\".format(old_image.shape, transform_image.shape))\n",
+    "# 用数据可视化部分的函数进行展示\n",
+    "figure = np.concatenate([old_image, transform_image], axis=0)\n",
+    "figure = stack_images(figure)\n",
+    "# 这里需要指定利用 cv 的调色板，否则 plt 展示出来会有色差\n",
+    "plt.imshow(cv2.cvtColor(figure, cv2.COLOR_BGR2RGB))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "仔细比较结果中的两个川普（从他们的下巴与下边界的距离，目光方向等方面进行比较），你会发现图片已经发生了变化。当然，如果你并没有发现太大变化，可以多次运行上述代码，如果幸运的话，你可以看到图片出现了翻转（设置的图片翻转概率为 40% ）。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 输入数据集和目标数据集"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "由于图片已经把川普的整个大头包含了进去，而我们需要训练只是川普的脸部特征。因此为了提高模型的训练效率，我们需要将川普的小脸从他的大头中切割出来，即将一张 $256\\times256$ 的大图变为 $64\\times64$ 的小图。将切割下来的小图放入模型中，既可以提高模型的训练速度，又可以提高准确性。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "如果仅仅是裁剪，我们可以直接进行随机剪切。但是为了提高模型的泛化性，在剪切的时候，我们还需要做一次数据增强，也就是将图片进行了扭曲编写。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "那么如何做到图片的扭曲呢？首先这里我们用到了 [OpenCv 中的简单映射的方法](https://blog.csdn.net/sss_369/article/details/52983123) ：将一张图片的一个像素点的值，放到另一张图片上的某个像素点上。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"250px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732555022\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "如上图所示，为了达到卷曲的效果，可以在决定映射位置时，添加一个小的波动，即某个点可能会映射到他原来位置的相邻位置。比如，原图的 4 位置本来应该映射到另外一张图的 4 位置，但是我们可以加上一个比较小的随机值，是它的映射位置出现细微偏移进而达到卷曲的效果。代码如下（下面代码会使用 OpenCV 中的 `remap()` 函数，不懂的可以查看 [该篇博客](https://blog.csdn.net/weixin_39746114/article/details/82467458)）："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def random_warp(image):\n",
+    "    # 先设置映射矩阵\n",
+    "    assert image.shape == (256, 256, 3)\n",
+    "    # 设置 range_ = [ 48.,  88., 128., 168., 208.]\n",
+    "    range_ = np.linspace(128-80, 128+80, 5)\n",
+    "    mapx = np.broadcast_to(range_, (5, 5))  # 利用 Python 广播的特性将 range_ 复制 5 份。\n",
+    "    mapy = mapx.T\n",
+    "    mapx = mapx + np.random.normal(size=(5, 5), scale=5)\n",
+    "    mapy = mapy + np.random.normal(size=(5, 5), scale=5)\n",
+    "    # 将大小为 5*5 的map放大为 80*80 ，再进行切片，得到 64 * 64 的 map\n",
+    "    interp_mapx = cv2.resize(mapx, (80, 80))[8:72, 8:72].astype('float32')\n",
+    "    interp_mapy = cv2.resize(mapy, (80, 80))[8:72, 8:72].astype('float32')\n",
+    "\n",
+    "    # 通过映射矩阵进行剪切和卷曲的操作，最后获得 64*64 的训练集图片\n",
+    "    warped_image = cv2.remap(image, interp_mapx, interp_mapy, cv2.INTER_LINEAR)\n",
+    "\n",
+    "    # 下面四行代码涉及到 target 的制作，该段代码会在下面进行阐述\n",
+    "    src_points = np.stack([mapx.ravel(), mapy.ravel()], axis=-1)\n",
+    "    dst_points = np.mgrid[0:65:16, 0:65:16].T.reshape(-1, 2)\n",
+    "    mat = umeyama(src_points, dst_points, True)[0:2]  # umeyama 函数的定义见下面代码块\n",
+    "    target_image = cv2.warpAffine(image, mat, (64, 64))\n",
+    "\n",
+    "    return warped_image, target_image"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "从上面代码中可以看出，我们并没有直接把做好的输入数据集当做目标数据集，而是对输入数据集中的图片又进行了一次转换。这次转换采用的是点云匹配算法，其本质还是一种映射算法。（碍于篇幅本文不作详解，有兴趣的同学可以查看 [该篇论文](https://pdfs.semanticscholar.org/d107/231cce2676dbeea87e00bb0c587c280b9c53.pdf?_ga=2.4811827.1227996204.1574405188-269481624.1574405188)）。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "当然这个算法的代码不用我们自己编写，可以直接从官方库中下载，我们只需要运行一下即可。代码如下："
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# License (Modified BSD)\n",
+    "# umeyama function from scikit-image/skimage/transform/_geometric.py\n",
+    "def umeyama(src, dst, estimate_scale):\n",
+    "    \"\"\"Estimate N-D similarity transformation with or without scaling.\n",
+    "    Parameters\n",
+    "    ----------\n",
+    "    src : (M, N) array\n",
+    "        Source coordinates.\n",
+    "    dst : (M, N) array\n",
+    "        Destination coordinates.\n",
+    "    estimate_scale : bool\n",
+    "        Whether to estimate scaling factor.\n",
+    "    Returns\n",
+    "    -------\n",
+    "    T : (N + 1, N + 1)\n",
+    "        The homogeneous similarity transformation matrix. The matrix contains\n",
+    "        NaN values only if the problem is not well-conditioned.\n",
+    "    References\n",
+    "    ----------\n",
+    "    .. [1] \"Least-squares estimation of transformation parameters between two\n",
+    "            point patterns\", Shinji Umeyama, PAMI 1991, DOI: 10.1109/34.88573\n",
+    "    \"\"\"\n",
+    "\n",
+    "    num = src.shape[0]\n",
+    "    dim = src.shape[1]\n",
+    "\n",
+    "    # Compute mean of src and dst.\n",
+    "    src_mean = src.mean(axis=0)\n",
+    "    dst_mean = dst.mean(axis=0)\n",
+    "\n",
+    "    # Subtract mean from src and dst.\n",
+    "    src_demean = src - src_mean\n",
+    "    dst_demean = dst - dst_mean\n",
+    "\n",
+    "    # Eq. (38). 下面的Eq 都分别对应着论文中的公式\n",
+    "    A = np.dot(dst_demean.T, src_demean) / num\n",
+    "\n",
+    "    # Eq. (39).\n",
+    "    d = np.ones((dim,), dtype=np.double)\n",
+    "    if np.linalg.det(A) < 0:\n",
+    "        d[dim - 1] = -1\n",
+    "\n",
+    "    T = np.eye(dim + 1, dtype=np.double)\n",
+    "\n",
+    "    U, S, V = np.linalg.svd(A)\n",
+    "\n",
+    "    # Eq. (40) and (43).\n",
+    "    rank = np.linalg.matrix_rank(A)\n",
+    "    if rank == 0:\n",
+    "        return np.nan * T\n",
+    "    elif rank == dim - 1:\n",
+    "        if np.linalg.det(U) * np.linalg.det(V) > 0:\n",
+    "            T[:dim, :dim] = np.dot(U, V)\n",
+    "        else:\n",
+    "            s = d[dim - 1]\n",
+    "            d[dim - 1] = -1\n",
+    "            T[:dim, :dim] = np.dot(U, np.dot(np.diag(d), V))\n",
+    "            d[dim - 1] = s\n",
+    "    else:\n",
+    "        T[:dim, :dim] = np.dot(U, np.dot(np.diag(d), V.T))\n",
+    "\n",
+    "    if estimate_scale:\n",
+    "        # Eq. (41) and (42).\n",
+    "        scale = 1.0 / src_demean.var(axis=0).sum() * np.dot(S, d)\n",
+    "    else:\n",
+    "        scale = 1.0\n",
+    "\n",
+    "    T[:dim, dim] = dst_mean - scale * np.dot(T[:dim, :dim], src_mean.T)\n",
+    "    T[:dim, :dim] *= scale\n",
+    "\n",
+    "    return T"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来，我们传入一张图片测试，观察图片的变化，可以发现图片被被裁剪成了 $64\\times64\\times3$的新图片。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "warped_image, target_image = random_warp(transform_image)  # 返回训练图片和 target 图片\n",
+    "print(\"warpe 前图片大小{}\\nwarpe 后图片大小{}\".format(\n",
+    "    transform_image.shape, warped_image.shape))"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "#### 构造 Batch 数据集"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "终于到了数据预处理的最后一步，构造 Batch 数据集。这是深度学习中常见的一个步骤，其本质就是根据 batch_size 的大小将数据集进行分批。大小合适的 batch_size 可以使模型更加高效的收敛。代码如下： "
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "def get_training_data(images, batch_size):\n",
+    "    # 再分批的同时也把数据集打乱，有序的数据集可能使模型学偏\n",
+    "    indices = np.random.randint(len(images), size=batch_size)\n",
+    "    for i, index in enumerate(indices):\n",
+    "        # 处理该批数据集\n",
+    "        image = images[index]\n",
+    "        # 将图片进行预处理\n",
+    "        image = random_transform(image)\n",
+    "        warped_img, target_img = random_warp(image)\n",
+    "\n",
+    "        # 开始分批\n",
+    "        if i == 0:\n",
+    "            warped_images = np.empty(\n",
+    "                (batch_size,) + warped_img.shape, warped_img.dtype)\n",
+    "            target_images = np.empty(\n",
+    "                (batch_size,) + target_img.shape, warped_img.dtype)\n",
+    "\n",
+    "        warped_images[i] = warped_img\n",
+    "        target_images[i] = target_img\n",
+    "\n",
+    "    return warped_images, target_images"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "接下来我们对上面代码进行测试，从川普的图片集合中取出一个 batch_size 的数据集。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 加载图片，并对图片进行归一化操作\n",
+    "#注意：由于该段代码之前 images_A 变量名存的是路径，而现在存的是真实的 image 矩阵\n",
+    "#因此如果需要重复重复运行该段代码会报错（这时就需要再运行一下第一部分的加载图片路径的代码块）\n",
+    "images_A = load_images(images_A) / 255.0\n",
+    "images_B = load_images(images_B) / 255.0\n",
+    "images_A += images_B.mean(axis=(0, 1, 2)) - images_A.mean(axis=(0, 1, 2))\n",
+    "\n",
+    "# 将数据进行分批，每个批次 20 条\n",
+    "warped_A, target_A = get_training_data(images_A, 20)\n",
+    "warped_A.shape, target_A.shape"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 模型训练"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "现在神经网络结构搭好了，数据也准备齐了，我们终于可以开始进行模型的训练了（由于 CPU 运行时间过长，因此建议你在 [Kaggle](https://www.kaggle.com/) 上的免费 GPU 环境中运行）。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 保存模型\n",
+    "def save_model_weights():\n",
+    "    encoder  .save_weights(\"encoder.h5\")\n",
+    "    decoder_A.save_weights(\"decoder_A.h5\")\n",
+    "    decoder_B.save_weights(\"decoder_B.h5\")\n",
+    "    print(\"save model weights\")\n",
+    "\n",
+    "\n",
+    "# 开始训练\n",
+    "epochs = 10  # 这里只用作演示，请在实际训练的时候，至少将其调到 8000 以上\n",
+    "\n",
+    "for epoch in range(epochs):\n",
+    "    print(\"第{}代，开始训练。。。\".format(epoch))\n",
+    "    batch_size = 26\n",
+    "    warped_A, target_A = get_training_data(images_A, batch_size)\n",
+    "    warped_B, target_B = get_training_data(images_B, batch_size)\n",
+    "    loss_A = autoencoder_A.train_on_batch(warped_A, target_A)\n",
+    "    loss_B = autoencoder_B.train_on_batch(warped_B, target_B)\n",
+    "    print(\"lossA:{},lossB:{}\".format(loss_A, loss_B))\n",
+    "# 下面都为画图和保存模型的操作\n",
+    "save_model_weights()"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": []
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "由于上述代码在 CPU 上运行的等待时间过长，为了能够使实验继续，**请点击中断服务**(即左上角的方块形按钮) 停止运行，或者连续按两次 $ I $ 中断程序运行。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "下图是我在 Kaggle 上，利用 GPU 训练了 30 min 中的模型结果（实验代码以及训练后的模型已上传到 Kaggle 上，点击 [这里](https://www.kaggle.com/tianyanxiaobai/tensorflow-2-ai/) 可进行查看）。每类图片的第一张表示原始图片，第二张表示自己的解码器所生成的图片，第三张表示对方的解码器所生成的图片。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<img width=\"300px\" src=\"https://doc.shiyanlou.com/courses/uid1166617-20191126-1574732516049\">"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "可以看出，训练了 30 min 的模型已经能够大概的模仿川普和凯奇的面部轮廓了。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "为了防止 CPU 运行卡死，上面代码我们只进行了 10 次迭代，有条件的同学可以通过改变模型的训练次数，模型的保存频率等参数来使模型效果更好。下面我们直接加载训练好的模型（你也可以直接加载到本地进行测试），来测试观察结果。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 模型运用"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "这里我们从实验楼的网站上下载模型，并解压。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "!wget -nc \"https://labfile.oss.aliyuncs.com/courses/1460/models_weights.zip\" # 下载数据集\n",
+    "!unzip -o \"models_weights.zip\" # 解压"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "整个换脸模型被保存成了三部分：编码器（encoder.h5 ）、解码器 A （decoder_A.h5 ）和解码器 B （decoder_B.h5 ）。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "测试的代码和训练代码雷同，只是删去了循环和训练的步骤。虽然下列代码没有训练的过程，但是由于加载模型需要消耗一些时间，预计运行 1~3 min ，请耐心等待。"
+   ]
+  },
+  {
+   "cell_type": "code",
+   "execution_count": null,
+   "metadata": {},
+   "outputs": [],
+   "source": [
+    "# 直接加载模型\n",
+    "print(\"开始加载模型，请耐心等待。。。\")\n",
+    "encoder  .load_weights(\"encoder.h5\")\n",
+    "decoder_A.load_weights(\"decoder_A.h5\")\n",
+    "decoder_B.load_weights(\"decoder_B.h5\")\n",
+    "\n",
+    "\n",
+    "# 下面代码和训练代码类似\n",
+    "# 获取图片，并对图片进行预处理\n",
+    "images_A = get_image_paths(\"trump\")\n",
+    "images_B = get_image_paths(\"cage\")\n",
+    "# 图片进行归一化处理\n",
+    "images_A = load_images(images_A) / 255.0\n",
+    "images_B = load_images(images_B) / 255.0\n",
+    "\n",
+    "images_A += images_B.mean(axis=(0, 1, 2)) - images_A.mean(axis=(0, 1, 2))\n",
+    "batch_size = 64\n",
+    "warped_A, target_A = get_training_data(images_A, batch_size)\n",
+    "warped_B, target_B = get_training_data(images_B, batch_size)\n",
+    "\n",
+    "\n",
+    "# 分别取当下批次下的川普和凯奇的图片的前三张进行观察\n",
+    "test_A = target_A[0:3]\n",
+    "test_B = target_B[0:3]\n",
+    "\n",
+    "print(\"开始预测，请耐心等待。。。\")\n",
+    "# 进行拼接 原图 A - 解码器 A 生成的图 - 解码器 B 生成的图\n",
+    "figure_A = np.stack([\n",
+    "    test_A,\n",
+    "    autoencoder_A.predict(test_A),\n",
+    "    autoencoder_B.predict(test_A),\n",
+    "], axis=1)\n",
+    "# 进行拼接  原图 B - 解码器 B 生成的图 - 解码器 A 生成的图\n",
+    "figure_B = np.stack([\n",
+    "    test_B,\n",
+    "    autoencoder_B.predict(test_B),\n",
+    "    autoencoder_A.predict(test_B),\n",
+    "], axis=1)\n",
+    "\n",
+    "print(\"开始画图，请耐心等待。。。\")\n",
+    "# 将多幅图拼成一幅图 （已在数据可视化部分进行了详细讲解）\n",
+    "figure = np.concatenate([figure_A, figure_B], axis=0)\n",
+    "figure = figure.reshape((2, 3) + figure.shape[1:])\n",
+    "figure = stack_images(figure)\n",
+    "\n",
+    "# 将图片进行反归一化\n",
+    "figure = np.clip(figure * 255, 0, 255).astype('uint8')\n",
+    "\n",
+    "# 显示图片\n",
+    "plt.imshow(cv2.cvtColor(figure, cv2.COLOR_BGR2RGB))\n",
+    "plt.show()"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "根据上述结果，可以看出该模型已经能够很好的将川普和凯奇的脸进行模仿了。当然，其实后面还有一些处理工作。比如我们还需要把生成的神似凯奇的脸拼回到原来的川普的头上。这一步骤涉及到很多图形学的知识，比如泊松融合以及 Mask 边缘融合等。由于这些内容和本实验的知识点没有太大关联，因此这里不再赘述，有兴趣的同学可以自行拓展。\n"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "### 实验总结"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "人脸互换虽然是一个很小的项目，但是里面却包含了各种各样的知识点。在本次实验中，我们学习到了数据的可视化、自编码的应用、上采样的实现以及计算机视觉领域中常用的数据增强的方法。但是由于自编码器可能产生灾难性遗忘等问题，有能力的同学，可以尝试在原来模型的基础上，添加 Attention 机制。"
+   ]
+  },
+  {
+   "cell_type": "markdown",
+   "metadata": {},
+   "source": [
+    "<hr><div style=\"color: #999; font-size: 12px;\"><i class=\"fa fa-copyright\" aria-hidden=\"true\"> 本课程内容版权归实验楼所有，禁止转载、下载及非法传播。</i></div>"
+   ]
+  }
+ ],
+ "metadata": {
+  "kernelspec": {
+   "display_name": "Python 3",
+   "language": "python",
+   "name": "python3"
+  },
+  "language_info": {
+   "codemirror_mode": {
+    "name": "ipython",
+    "version": 3
+   },
+   "file_extension": ".py",
+   "mimetype": "text/x-python",
+   "name": "python",
+   "nbconvert_exporter": "python",
+   "pygments_lexer": "ipython3",
+   "version": "3.7.0"
+  }
+ },
+ "nbformat": 4,
+ "nbformat_minor": 1
+}
